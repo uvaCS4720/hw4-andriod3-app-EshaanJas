@@ -1,41 +1,56 @@
 package edu.nd.pmcburne.hello
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import edu.nd.pmcburne.hello.data.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
-data class MainUIState(
-    val counterValue: Int
-)
+class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-class MainViewModel(
-    val initialCounterValue: Int = 0
-) : ViewModel() {
-    private val _uiState = MutableStateFlow(MainUIState(initialCounterValue))
-    val uiState: StateFlow<MainUIState> = _uiState.asStateFlow()
+    private val dao = AppDatabase.getInstance(application).placemarkDao()
 
-    fun incrementCounter() {
-        _uiState.update{ currentState ->
-            currentState.copy(counterValue = _uiState.value.counterValue + 1)
+    private val _allTags = MutableStateFlow<List<String>>(emptyList())
+    val allTags: StateFlow<List<String>> = _allTags
+
+    private val _selectedTag = MutableStateFlow("core")
+    val selectedTag: StateFlow<String> = _selectedTag
+
+    private val _filteredPlacemarks = MutableStateFlow<List<PlacemarkEntity>>(emptyList())
+    val filteredPlacemarks: StateFlow<List<PlacemarkEntity>> = _filteredPlacemarks
+
+    init {
+        viewModelScope.launch {
+            // fetch from API and insert (IGNORE strategy handles dedup)
+            try {
+                val dtos = RetrofitInstance.api.getPlacemarks()
+                val entities = dtos.map {
+                    PlacemarkEntity(it.id, it.name, it.description, it.tagList,
+                        it.visualCenter.latitude, it.visualCenter.longitude)
+                }
+                dao.insertAll(entities)
+            } catch (e: Exception) {
+                // if offline, just use cached DB data
+            }
+
+            // load tags (flatten + deduplicate + sort)
+            val tags = dao.getAll()
+                .flatMap { it.tagList }
+                .distinct()
+                .sorted()
+            _allTags.value = tags
+
+            // load initial filtered markers
+            updateFilter("core")
         }
     }
 
-    fun decrementCounter() {
-        _uiState.update{ currentState ->
-            currentState.copy(counterValue = _uiState.value.counterValue - 1)
+    fun updateFilter(tag: String) {
+        _selectedTag.value = tag
+        viewModelScope.launch {
+            _filteredPlacemarks.value = dao.getAll().filter { tag in it.tagList }
         }
     }
-
-    fun resetCounter() {
-        _uiState.update { currentState ->
-            currentState.copy(counterValue = 0)
-        }
-    }
-
-    val isDecrementEnabled: Boolean
-        get() = _uiState.value.counterValue > 0
-    val isResetEnabled: Boolean
-        get() = _uiState.value.counterValue > 0
 }
